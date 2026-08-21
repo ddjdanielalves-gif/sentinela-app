@@ -123,6 +123,13 @@ def extrair_imagens(soup: BeautifulSoup) -> list[Imagem]:
 
         paragrafos = _extrair_numeros(legenda) if _LEGENDA_PARAGRAFO_RE.search(legenda) else []
 
+        # Corta qualquer coisa depois do "(Veja o(s) parágrafo(s) N.)" — às
+        # vezes vem colado um marcador de nota de rodapé (*, a, b...) que não
+        # faz parte da legenda de verdade.
+        m_fim = re.search(r"\(veja[^)]*\)", legenda, re.IGNORECASE)
+        if m_fim:
+            legenda = legenda[: m_fim.end()]
+
         imagens.append(Imagem(alt=alt, legenda=legenda, paragrafos=paragrafos))
 
     return imagens
