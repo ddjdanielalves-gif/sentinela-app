@@ -48,7 +48,6 @@ HEADERS = {
 # Padrões de texto que aparecem no HTML mas não são conteúdo real do artigo.
 PLACEHOLDER_PATTERNS = [
     "a sua resposta",
-    "sua resposta",
     "your answer",
 ]
 
@@ -123,13 +122,6 @@ def extrair_imagens(soup: BeautifulSoup) -> list[Imagem]:
 
         paragrafos = _extrair_numeros(legenda) if _LEGENDA_PARAGRAFO_RE.search(legenda) else []
 
-        # Corta qualquer coisa depois do "(Veja o(s) parágrafo(s) N.)" — às
-        # vezes vem colado um marcador de nota de rodapé (*, a, b...) que não
-        # faz parte da legenda de verdade.
-        m_fim = re.search(r"\(veja[^)]*\)", legenda, re.IGNORECASE)
-        if m_fim:
-            legenda = legenda[: m_fim.end()]
-
         imagens.append(Imagem(alt=alt, legenda=legenda, paragrafos=paragrafos))
 
     return imagens
@@ -172,14 +164,8 @@ def parse_article(html: str) -> dict:
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    titulo = ""
-    titulo_tag = soup.find("h1")
-    if titulo_tag:
-        titulo = _texto_limpo(titulo_tag)
-    if not titulo:
-        meta_titulo = soup.find("meta", attrs={"property": "og:title"})
-        if meta_titulo and meta_titulo.get("content"):
-            titulo = meta_titulo["content"].split(" | ")[0].strip()
+    titulo_tag = soup.find(["h1", "h2"])
+    titulo = _texto_limpo(titulo_tag) if titulo_tag else ""
 
     imagens = extrair_imagens(soup)
 
@@ -190,7 +176,6 @@ def parse_article(html: str) -> dict:
 
     pergunta_pendente: Optional[str] = None
     numeros_pendentes: list[int] = []
-    ultimo_numero_paragrafo = 0
     items: list[ItemArtigo] = []
 
     for p in candidatos:
@@ -218,22 +203,6 @@ def parse_article(html: str) -> dict:
             m_paragrafo and not eh_pergunta
         )
 
-        # Caso especial: o parágrafo 1 do artigo nunca tem número visível no
-        # jw.org (só a partir do parágrafo 2 aparece o "2", "3" etc. em
-        # negrito). Se o texto não bateu com nenhum padrão numerado, mas o
-        # próximo número esperado (pela pergunta pendente) é exatamente o
-        # seguinte ao último parágrafo capturado, tratamos como sendo esse
-        # parágrafo "invisível".
-        eh_paragrafo_implicito = False
-        if (
-            not eh_pergunta
-            and not eh_paragrafo
-            and numeros_pendentes
-            and min(numeros_pendentes) == ultimo_numero_paragrafo + 1
-            and len(texto) > 20
-        ):
-            eh_paragrafo_implicito = True
-
         if eh_pergunta:
             # Guarda a pergunta e os números de parágrafo que ela cobre
             # (pode ser 1 ou um intervalo, ex: "14-15.").
@@ -254,11 +223,8 @@ def parse_article(html: str) -> dict:
                 pergunta_texto = texto.replace(_texto_limpo(primeiro_strong), "", 1).strip()
             pergunta_pendente = pergunta_texto or texto
 
-        elif eh_paragrafo or eh_paragrafo_implicito:
-            if eh_paragrafo_implicito:
-                numero = min(numeros_pendentes)
-                corpo = texto
-            elif num_strong:
+        elif eh_paragrafo:
+            if num_strong:
                 numero = int(num_strong[0])
                 corpo = texto
                 prefixo_strong = _texto_limpo(primeiro_strong)
@@ -267,8 +233,6 @@ def parse_article(html: str) -> dict:
             else:
                 numero = int(m_paragrafo.group(1))
                 corpo = _PARAGRAFO_NUM_RE.sub("", texto, count=1).strip()
-
-            ultimo_numero_paragrafo = numero
 
             # Pergunta associada: se este número está entre os pendentes, usa
             # a mesma pergunta para todos os parágrafos daquele intervalo.
