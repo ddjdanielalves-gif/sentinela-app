@@ -14,6 +14,7 @@ Funções:
 from __future__ import annotations
 
 from datetime import date
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query
 
@@ -37,8 +38,56 @@ app = FastAPI(
         "API para localizar e interpretar automaticamente "
         "o artigo semanal da Sentinela no JW.org."
     ),
-    version="0.2.0",
+    version="0.3.0",
 )
+
+
+# ============================================================
+# FUNÇÕES AUXILIARES
+# ============================================================
+
+def validar_url_jw(url: str) -> None:
+    """
+    Valida se a URL informada pertence ao www.jw.org.
+
+    Não aceita wol.jw.org.
+    """
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="URL inválida.",
+        )
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400,
+            detail="A URL precisa usar http ou https.",
+        )
+
+    hostname = (parsed.hostname or "").lower()
+
+    if hostname == "wol.jw.org":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "O sistema não utiliza wol.jw.org. "
+                "Use uma URL do www.jw.org."
+            ),
+        )
+
+    if hostname not in (
+        "www.jw.org",
+        "jw.org",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A URL precisa pertencer ao www.jw.org."
+            ),
+        )
 
 
 # ============================================================
@@ -86,39 +135,33 @@ def obter_artigo(
 
         GET /artigo
 
-    Uso com uma data específica:
+    Uso com data específica:
 
         GET /artigo?data=2026-08-20
 
-    Uso manual com URL:
+    Uso manual:
 
         GET /artigo?url=https://www.jw.org/...
     """
 
     # ========================================================
-    # 1. DETERMINAR A URL DO ARTIGO
+    # 1. DETERMINAR A DATA
+    # ========================================================
+
+    data_busca = data or date.today()
+
+
+    # ========================================================
+    # 2. DETERMINAR A URL DO ARTIGO
     # ========================================================
 
     if url:
 
-        # Não permitir WOL nessa rota.
-        if "wol.jw.org" in url.lower():
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Use uma URL do www.jw.org, "
-                    "não do wol.jw.org."
-                ),
-            )
+        # ----------------------------------------------------
+        # URL fornecida manualmente
+        # ----------------------------------------------------
 
-        # Garantir que seja uma URL do JW.org.
-        if "jw.org" not in url.lower():
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "A URL precisa pertencer ao jw.org."
-                ),
-            )
+        validar_url_jw(url)
 
         url_artigo = url
 
@@ -127,8 +170,6 @@ def obter_artigo(
         # ----------------------------------------------------
         # Busca automática
         # ----------------------------------------------------
-
-        data_busca = data or date.today()
 
         try:
 
@@ -150,8 +191,9 @@ def obter_artigo(
                 },
             )
 
+
     # ========================================================
-    # 2. BAIXAR O ARTIGO
+    # 3. BAIXAR O ARTIGO
     # ========================================================
 
     try:
@@ -165,14 +207,18 @@ def obter_artigo(
         raise HTTPException(
             status_code=502,
             detail={
-                "erro": "Falha ao acessar o artigo.",
+                "erro": (
+                    "Não foi possível acessar "
+                    "o artigo no JW.org."
+                ),
                 "detalhes": str(erro),
                 "url": url_artigo,
             },
         )
 
+
     # ========================================================
-    # 3. INTERPRETAR O ARTIGO
+    # 4. INTERPRETAR O ARTIGO
     # ========================================================
 
     try:
@@ -186,20 +232,52 @@ def obter_artigo(
         raise HTTPException(
             status_code=500,
             detail={
-                "erro": "Falha ao interpretar o artigo.",
+                "erro": (
+                    "O artigo foi baixado, "
+                    "mas não foi possível interpretá-lo."
+                ),
                 "detalhes": str(erro),
                 "url": url_artigo,
             },
         )
 
+
     # ========================================================
-    # 4. VALIDAR RESULTADO
+    # 5. VALIDAR RESULTADO
     # ========================================================
+
+    if not isinstance(artigo, dict):
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "erro": (
+                    "O parser retornou um formato inválido."
+                ),
+                "url": url_artigo,
+            },
+        )
+
 
     items = artigo.get(
         "items",
         [],
     )
+
+
+    if not isinstance(items, list):
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "erro": (
+                    "O campo 'items' retornado "
+                    "pelo parser é inválido."
+                ),
+                "url": url_artigo,
+            },
+        )
+
 
     if not items:
 
@@ -208,23 +286,75 @@ def obter_artigo(
             detail={
                 "erro": (
                     "O artigo foi encontrado, "
-                    "mas nenhuma pergunta/parágrafo "
+                    "mas nenhuma pergunta ou parágrafo "
                     "foi identificado."
                 ),
                 "url": url_artigo,
             },
         )
 
+
     # ========================================================
-    # 5. RETORNAR JSON
+    # 6. NORMALIZAR OS ITEMS
+    # ========================================================
+
+    items_normalizados = []
+
+    for item in items:
+
+        if not isinstance(item, dict):
+            continue
+
+        numero = item.get(
+            "numero"
+        )
+
+        pergunta = item.get(
+            "pergunta"
+        )
+
+        paragrafo = item.get(
+            "paragrafo"
+        )
+
+        imagem = item.get(
+            "imagem"
+        )
+
+        items_normalizados.append(
+            {
+                "numero": numero,
+                "pergunta": pergunta,
+                "paragrafo": paragrafo,
+                "imagem": imagem,
+            }
+        )
+
+
+    if not items_normalizados:
+
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "erro": (
+                    "Nenhum item válido foi encontrado "
+                    "no artigo."
+                ),
+                "url": url_artigo,
+            },
+        )
+
+
+    # ========================================================
+    # 7. RETORNAR JSON
     # ========================================================
 
     return {
         "status": "ok",
 
         "data_consulta": (
-            data or date.today()
-        ).isoformat(),
+            data_busca.isoformat()
+        ),
 
         "url": url_artigo,
 
@@ -233,8 +363,7 @@ def obter_artigo(
             "",
         ),
 
-        "items": items,
-
+        "items": items_normalizados,
     }
 
 
@@ -245,7 +374,8 @@ def obter_artigo(
 @app.get("/health")
 def health():
     """
-    Endpoint simples para o Render verificar a aplicação.
+    Endpoint utilizado pelo Render
+    para verificar a saúde da aplicação.
     """
 
     return {
